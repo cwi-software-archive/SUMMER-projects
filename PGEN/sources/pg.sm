@@ -1,0 +1,3090 @@
+#
+
+	pg - parser generator with error recovery.
+
+			by
+
+		Gert Florijn & Geert Rolf,
+
+		  Mathematisch Centrum
+
+		      @ 1980.
+
+		released:  January 15, 1981
+
+
+
+#
+
+
+const	EMPTY		:= 0,	#	state constants		#
+	UNDECIDED	:= 1,
+	NONEMPTY	:= 2,
+	TRUE		:= 1,	#	boolean constants	#
+	FALSE 		:= 0,
+	OKE		:= 1,	#	prevention for unwished failure	#
+	lower		:= 'abcdefghijklmnopqrstuvwxyz',
+	upper		:= 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+	digit		:= '0123456789',
+
+
+	# SYMBOL TYPES USED IN METALANGUAGE  #
+
+	t_EOF	:=	0,	#	end of file   #
+	t_EXIT	:=	1,	#	'EXIT'	      #
+	t_INIT	:=	2,	#	'INIT'	      #
+	t_STRING :=	3,	#	string	      #
+	t_RHS	:=	4,	#	')'	      #
+	t_MAST	:=	5,      #       '*'	      #
+        t_PLUS  :=      6,      #       '+'           #
+        t_KOM   :=      7,      #       ','           #
+        t_DOT   :=      8,      #       '.'           #
+        t_SS    :=      9,      #       '/'           #
+        t_DP    :=      10,     #       ':'           #
+        t_MASS  :=      11,     #       '::='         #
+        t_KL    :=      12,     #       '<'           #
+        t_GR    :=      13,     #       '>'           #
+        t_LEXICAL :=    14,     #       'LEXICAL'     #
+        t_VHO   :=      15,     #       '['           #
+        t_VHS   :=      16,     #       ']'           #
+        t_ACO   :=      17,     #       '}'           #
+        t_MOR   :=      18,     #       '|'           #
+        t_ACS   :=      19,     #       '}'           #
+        t_RHO   :=      20,     #       '('           #
+        t_IDENT :=      21,     #       ident         #
+        t_KEYWORD :=    22,     #       keyword       #
+        t_PROG  :=      23,     #       SUMMER text   #
+        SETSIZE :=      24;     #       number of symbol-types #
+
+
+
+	# GLOBAL VARIABLES USED BY PGEN	#
+
+var
+ 	symboltab := table(3,undefined) init [
+		'EXIT' : t_EXIT,
+		'INIT' : t_INIT,
+		'LEXICAL' : t_LEXICAL
+	],
+
+	# symboltab contains the keywords of the metalanguage.
+	  Note that the keywords must be written in upper case
+	  letters.
+	#
+
+
+
+	kartab := table(20,undefined) init [
+		')' : t_RHS,
+		'*' : t_MAST,
+		'+' : t_PLUS,
+		',' : t_KOM,
+		'.' : t_DOT,
+		'/' : t_SS,
+		':' : t_DP,
+		'::=' : t_MASS,
+		'<' : t_KL,
+		'>' : t_GR,
+		'[' : t_VHO,
+		']' : t_VHS,
+		'{' : t_ACO,
+		'|' : t_MOR,
+		'}' : t_ACS,
+		'('  : t_RHO
+	],
+
+	# kartab contains the character constants of the
+	  metalanguage with their associated type-values.
+	#
+
+
+
+
+
+	line := scan_string(' '),	# contains the current input line #
+	sy,				# contains the current symbol     #
+	t_sy,				# contains the type of sy	  #
+	lnr := 0,			# current line number		  #
+	cout,				# file for generated code	  #
+	tout,				# file for generated tables	  #
+	sout,				# file for generated sets	  #
+	fout,				# file for generated firstsets    #
+	fsyn,			        # input file with grammar	  #
+	startsym,		        # start symbol of the grammar	  #
+        rule_cnt,			# number of nont.'s in the grammar#
+	errcnt := 0,			# global error count		  #
+	kars := kartab.index,		# array with symbols from PKF	  #
+	karsize := kartab.size;		# number of symbols		  #
+
+
+
+
+
+
+
+
+class flex(n,df)
+begin	fetch	update,retrieve,size;
+	var	size,step,far;
+
+	proc retrieve (i)
+	(	if 0 <= i < size
+		then return(far[i])
+		else freturn
+		fi;
+	);
+
+
+
+	proc update (i,val)
+	(	if i >= far.size
+		then	var j,
+			    help := array(i+step,df);
+
+			for j in interval(0,size - 1,1)
+			do	help[j] := far[j]	od;
+
+			far := help;
+		fi;
+		size := i + 1;
+		far[i] := val;
+	);
+
+
+init :	far := array(n,df);
+	step := 5;
+	size := 0;
+
+end flex;
+
+
+
+	# flex is used to obtain an automatic expanding array with
+	  limited possibilities. Only update, retrieve
+	  and size can be used. When the update index exceeds
+	  the current range, the values are copied to a
+	  larger array.
+	#
+
+
+
+
+
+
+	#  CLASS GENERAL NODE
+	  
+	   Is used as general node structure. It's a superclass
+	   of various other type of nodes. The meaning of the 
+	   fields :
+
+		children :	flexible array with children-nodes.
+				The link is made by the children, via
+				a call of make-link.
+		child_count :   number of children nodes.
+		state :		indicates whether the node can produce 
+				the empty sentence or not. Can have 
+				three values: EMPTY, NONEMPTY and 
+				UNDECIDED.
+		firstsyms :	table that contains the first-symbols
+				of this node.
+		first_UND :	Used during information retrieval
+				process. Equals the number of children
+				that influence this node's firstsymbols, but
+				whose own first-symbols are not determined
+				yet.
+		make_link :	makes a link between the current node and
+				one of it's children-nodes.
+	#
+
+
+
+class general_node()
+begin
+	fetch	children,child_count,state,firstsyms,first_UND,make_link;
+	store	child_count,state,first_UND,firstsyms;
+	var	children,child_count,state,first_UND,firstsyms;
+
+
+
+	proc make_link(child)
+	(
+		children[child_count] := child;
+
+		if type( child ) ~= 'alt'
+		then 	children[ child_count].seqnr := child_count;
+		fi;
+
+		child_count:=child_count+1;
+	);
+
+
+
+init :
+	child_count := 0;
+	children := flex(5,undefined);
+	first_UND := 0;
+	firstsyms := table(10,0);
+
+end general_node;
+
+
+
+
+
+#	RULE ROOT
+	root of the tree, which reflects a production rule
+	(see general_node also)
+
+	name		:	name of the production rule.
+	follow		:	table, which holds the follow symbols,
+				when necessary.
+	initcode	:	code that must be printed at the head
+				of the procedure that will handle this
+				rule. Can also contain declarations of
+				variables made by PGEN.
+	exitcode	:	code that must be performed at the end
+				of the procedure.
+#
+
+
+class rule_root(naam)
+begin
+	subclass of general_node;
+	fetch name,follow,initcode,exitcode;
+	store follow,initcode,exitcode;
+	var   name,follow,initcode,exitcode;
+
+init :
+	state := UNDECIDED;
+	name  := naam;
+
+end rule_root;
+
+
+
+
+
+
+#	BODY OR ALT NODE
+	structure for body nodes as well as alt nodes.
+	( see also general node )
+
+
+	parent		:	link to the parent node.
+	action		:	contains action related to this node.
+#
+
+
+class body_or_alt_node(par,toestand)
+begin
+	subclass of general_node;
+
+	fetch	parent, action ;
+	store   action ;
+	var	parent, action ;
+
+
+init :
+	parent := par;
+	state := toestand;
+	parent.make_link(self);
+
+end body_or_alt_node;
+
+
+#	BODY
+	node which contains the body structure
+	(see also body_or_alt node)
+
+	seqnr		:	sequence number of this node in the
+				children array of its parent.
+				Therefore, parent.children[seqnr] = self.
+	type		:	contains the type of the enclosing
+				structure, e.g. compound, option, etc.
+#
+
+
+class body(par,toestand)
+begin
+	subclass of body_or_alt_node;
+
+	fetch 	seqnr,type;
+	store	seqnr,type;
+	var	seqnr,type;
+
+end body;
+
+
+#	ALT
+	represents an alternative.
+	(see also body_or_alt node)
+
+	point		:	sequence number of the last child,
+				which determines the first of this node.
+#
+
+
+class alt(par,toestand)
+begin
+        subclass of body_or_alt_node;
+
+	fetch	point;
+	store	point;
+	var	point;
+
+end alt;
+
+
+
+
+#	TERM
+	reflects a terminal symbol
+	(see also the classdeclarations above)
+
+	symbol		:	the terminal symbol.
+#
+
+class term(par, sym)
+begin
+	fetch parent, state, type, symbol,seqnr,first_UND, action ;
+        store state, type, symbol,seqnr, action ;
+        var   parent, state, type, symbol,seqnr,first_UND, action ;
+
+init:	symbol := sym;
+	parent := par;
+	parent.make_link(self);
+	state := NONEMPTY;
+	first_UND := 0;
+
+end term;
+
+
+
+
+
+
+#	NONT
+	node, which reflects a call of another production rule.
+	(see also the comments above)
+
+	name		:	name of the called production rule.
+#
+
+
+
+class nont(par,nam)
+begin
+	fetch parent, state, type, name,first_UND, seqnr,ass_var, action ;
+	store state,type,first_UND, seqnr,ass_var, action ;
+	var   parent, state, type, name,first_UND, seqnr,ass_var, action ;
+
+init:	parent := par;
+	name := nam;
+	type := 'n0';
+	state := UNDECIDED;
+	first_UND := 1;
+	parent.make_link(self);
+
+end nont;
+
+
+
+
+
+#	TT ENTRY
+	entry for a production rule in the treetable.
+
+	root		:	root node of the production rule.
+	reftab		:	table, which contains the calling
+				nodes in other production rules.
+	filled_in	:	flag, used when determining the
+				first symbols of all nodes. True
+				when the first of the production rule is
+				carried over to its callers.
+#
+
+class tt_entry()
+begin
+	fetch root, reftab,filled_in;
+	store root, reftab,filled_in;
+	var   root, reftab := table(5, undefined),filled_in:=FALSE;
+
+end tt_entry;
+
+
+
+
+
+
+var	symtab := table(20,undefined),
+
+	# symtab is used to store the keywords found in the grammar.
+	  The keywords are mapped to lower-case letters before being
+	  entered.
+	#
+
+
+	chartab := table(20,undefined),
+
+	# chartab contains the character constants found in the grammar.
+	  The constants are stored in their initial form, so no trans-
+	  formations are performed.
+	#
+
+
+	remsets := table(20,undefined),
+
+	# remsets is used for the declaration of the so-called remainder
+	  sets. When a remainder-set is declared, i.e. when the declaration
+	  is written on the file sout, the name of the set is entered
+	  in this table. This allows the code generator to check whether
+	  a set is declared or not. How and when a set is declared can be
+	  found in the procedure rdecl.
+	#
+
+
+	var_decl := table(5,undefined),
+
+	# var_decl contains the names of the tags which were used
+	  in a production-rule. The tags are used to pick up return
+	  values of other procedures. All tags within one production
+	  are declared at the start of the production. This declaration
+	  code is stored in the initcode-field of the root of the tree.
+	#
+
+
+        treetab := table(150,undefined), 
+
+	# treetab contains the roots of all the trees for rules in
+	  the grammar. 
+	#
+
+
+	predef := table(4,undefined),
+
+	# predef contains the name of the user-defined lexical
+	  symbols. These names are specified in the grammar 
+	  using the:
+		LEXICAL  ....
+	  clause. The hyphens are immediately substituted by 
+	  underlines.
+	#
+
+
+	labeltab,
+
+	# labeltab is used to store the labelnames with
+	  the nodes to which the label was associated. The table
+	  is initialized before a new production is dealt with.
+	#
+
+
+	path := table(5,undefined);
+
+	# path is used when a follow set is determined. All the
+	  nodes that are involved in the current search for fol-
+	  low-symbols, are entered in this table. Whenever we
+	  reach a node that is already present in path, the search
+	  does not continue at that point. 
+	  This table is needed to prevent endless search for fol-
+	  low-symbols.
+	#
+
+
+
+
+
+
+
+	#  SET HANDLING PROCEDURES		#
+
+
+
+proc SET(ar)
+(	var set := bits(SETSIZE, 0), elem;
+	for elem in ar
+	do	set[elem] := 1 od;
+	return(set)
+);
+	# Constructs a subset of all symbol types from an array of	#
+	# integers: the bits to be set to 1.				#
+
+
+
+
+
+proc UN(sets)
+(	var elem,b := bits(SETSIZE,0);
+	for elem in sets 
+	do	b := b.disj(elem) od;
+	return(b);
+);
+	# computes the union of the (bit) sets and returns the union    #
+	# as a set.							#
+
+
+
+proc MEM(elem,set)
+	if set[elem] = 1
+	then	return
+	else	freturn
+	fi;
+
+#	succeeds when elem is in set ; fails otherwise.	#
+
+
+
+
+
+
+	# SETS USED BY THE PARSERGENERATOR		#
+
+
+
+var
+	f_code_spec := SET([t_SS,t_INIT,t_EXIT]),
+	f_alternative := SET([t_RHO,t_SS,t_KL,t_VHO,t_IDENT,
+				t_KEYWORD,t_STRING,t_ACO]),
+	f_grammar := SET([t_KL,t_LEXICAL]),
+	f_list_0_3_0 := SET([t_KEYWORD,t_STRING]),
+	f_list_0_3 := SET([t_KL,t_KEYWORD,t_STRING]),
+	f_list_0_6 := SET([t_MAST,t_PLUS]),
+	f_primary_0_0_0 := SET([t_RHO,t_KL,t_IDENT,t_KEYWORD,t_STRING]),
+	f_primary := SET([t_RHO,t_KL,t_VHO,t_IDENT,t_KEYWORD,t_STRING,
+			t_ACO]),
+	f_rule_body := SET([t_RHO,t_SS,t_KL,t_VHO,t_IDENT,t_KEYWORD,
+			t_STRING,t_ACO]),
+	f_rule_call := SET([t_KL,t_IDENT]),
+	f_terminal_symbol := SET([t_KEYWORD,t_STRING]),
+
+
+
+
+	s_EXIT := SET([t_EXIT]),
+	s_INIT := SET([t_INIT]),
+	s_RHS := SET([t_RHS]),
+	s_RHO := SET([t_RHO]),
+	s_MAST := SET([t_MAST]),
+	s_PLUS := SET([t_PLUS]),
+	s_KOM := SET([t_KOM]),
+	s_DOT := SET([t_DOT]),
+	s_SS := SET([t_SS]),
+	s_DP := SET([t_DP]),
+	s_MASS := SET([t_MASS]),
+	s_KL := SET([t_KL]),
+	s_GR := SET([t_GR]),
+	s_LEXICAL := SET([t_LEXICAL]),
+	s_VHO := SET([t_VHO]),
+	s_VHS := SET([t_VHS]),
+	s_ACO := SET([t_ACO]),
+	s_MOR := SET([t_MOR]),
+	s_ACS := SET([t_ACS]),
+	s_IDENT := SET([t_IDENT]),
+	s_KEYWORD := SET([t_KEYWORD]),
+	s_PROG := SET([t_PROG]),
+	s_STRING := SET([t_STRING]),
+	s_EOF := SET([t_EOF]),
+	empty := SET([]),
+
+
+
+
+
+
+	r_list_0_5 := f_list_0_6,
+	r_list_0_4 := UN([s_ACS,r_list_0_5]),
+	r_list_0_3 := UN([s_SS,r_list_0_4]),
+	r_list_0_2 := UN([f_list_0_3,r_list_0_3]),
+	r_list_0_1 := UN([f_primary,r_list_0_2]),
+	r_list_0_0 := UN([s_SS,r_list_0_1]),
+	r_list_0_1_0_0 := r_list_0_1,
+	r_list_0_3_0_0 := r_list_0_3,
+	r_list_0_3_1_0 := r_list_0_3,
+	r_list_0_4_0_0 := r_list_0_4;
+
+
+
+
+
+
+	#  LEXICAL PROCEDURES			#
+
+
+
+proc get_string ()
+(
+	const quote := '''';
+	var symbol := '';
+
+	scan line
+	for	var s := cursor;
+		while break(quote) & lit(quote||quote)
+		do	od;
+
+		if ~lit(quote)
+		then	ermsg('Newline not allowed in string.\n',lnr)
+		else	move(-1);
+		fi;
+
+		s := cursor - s;
+		symbol := move(-s);
+		move(s);
+
+		if lit(quote)
+		then	if symbol = ''
+			then	ermsg('Character constant missing.\n',lnr)
+			fi
+		fi
+	rof;
+	return(symbol);
+);
+
+
+
+	# get_string reads a character-constant from the input.
+	  The quote character can be denoted by doubling it.
+	  Note that escape sequences are not converted . This
+	  means that things like '\' are not detected.
+	#
+
+
+
+proc comment()
+(
+	while line.break('#') fails do
+		if line := scan_string(fsyn.get()) fails
+		then ermsg('Comment not terminated.',lnr);
+		     line := scan_string(' ');
+		     return
+		else lnr:=lnr+1;
+		fi;
+	od;
+
+
+	if line.move(1) fails
+	then if line:= scan_string(fsyn.get())
+	     then lnr:=lnr+1;
+	     fi;
+	fi;
+);
+
+
+
+	# comment() skips comment in the metalanguage.
+	  An error message is printed when the comment isn't terminated.
+	#
+
+
+
+
+
+proc nextsym()
+(
+	while TRUE do
+		line.span(' \t')|OKE;
+
+		if sy := line.any(lower) succeeds
+                then    sy := sy ||
+			  line.span(lower||digit||'-'||'_').replace('-','_') |
+			  OKE;
+			t_sy := t_IDENT;
+			return;
+
+		elif sy := line.any(upper) succeeds
+		then	sy := sy || line.span(upper) | OKE;
+			if symboltab[sy] ~= undefined
+			then	t_sy := symboltab[sy]
+			else	t_sy := t_KEYWORD;
+			fi;
+			return
+
+		elif line.lit('''')
+		then	t_sy := t_STRING;
+			sy := get_string;
+			return;
+		elif line.rpos(0) succeeds
+                then    (line := scan_string(fsyn.get()) & lnr:=lnr+1) |
+			(t_sy:=t_EOF & sy := 'EOF' & return);
+
+		else	var i;
+			for i in interval(karsize-1,0,-1)
+			do	sy := kars[i];
+				if line.lit(sy) succeeds
+				then	t_sy := kartab[sy];
+					return;
+				fi;
+			od;
+
+
+			sy := line.move(1);
+			if sy = '#'
+			then	comment();
+			else	ermsg('Character "' || sy ||
+					'" not in legal context.',lnr);
+			fi;
+		fi;
+	od;
+);
+
+	# nextsym() is the scanner for the parsergenerator. It reads
+	  the next symbol from the input , puts it in the variable sy
+	  and puts the type in t_sy.
+	  The procedure tries to recognise the symbols in the following
+	  order :
+		1.	identifiers (lower-case letters + hyphens)
+		2.	keywords (upper-case letters)
+	        3.	a string constant in the grammar (a quote)
+                4.      a character constant ( e.g. ::= )
+
+	  When neither of these possibilities succeeds, comment is
+	  checked or an error message is printed. Of course, a new
+	  line is read, when necessary.
+	#
+
+
+
+
+
+
+
+
+proc error(mess,ln)
+(
+        put(string(ln).right(5,' '),': ',mess,' expected\n');
+        errcnt := errcnt + 1;
+);
+
+proc ermsg(mess,ln)
+(
+        put(string(ln).right(5,' '),': ',mess,'\n');
+        errcnt := errcnt + 1;
+);
+
+
+
+	# error and ermsg are used to print error messages.
+	  The difference between them is that error adds 
+	  the word 'expected' to the message
+	#
+
+
+
+
+proc testsym(exp,dont_skip,message)
+(
+
+	if MEM(t_sy,exp) fails
+	then	var mess := '  ',
+		    nskipped := 0,
+		    erlnr := lnr,
+		    both := UN([ exp,dont_skip]);
+
+
+		 while MEM( t_sy,both) fails 
+		 do	if nskipped < 6
+			then	if nskipped < 5
+				then mess := mess || sy || ' '
+				else mess := mess || sy || ' ....';
+				fi;
+				nskipped := nskipped + 1;
+			fi;
+			nextsym;
+		od;
+			
+
+
+                if mess ~= '  ' 
+                then    mess := '"' || mess ||
+					'"' || '   SKIPPED .\n';
+
+			mess:= mess||'\t\tscan resumed at "'
+					|| sy||'", in line '||string(lnr);
+		fi;
+
+		if  message ~= '' & ~MEM(t_sy,exp) 
+		then error(message,erlnr);
+		fi;
+
+
+		if mess ~= '  '
+		then ermsg(mess,erlnr);
+		fi;
+	fi;
+);
+
+
+	# testsym tests whether the current inputsymbol is expected
+	  or not. If the symbol wasn't expected and may be skipped, 
+	  then symbols are skipped until we an important one is found.
+	  More than five skipped symbols are followed by ' ...' .
+	  The error message is printed at the line-number where it 
+	  occurred, which is saved in erlnr.
+	#
+
+
+
+
+proc get_prog()
+(
+	sy := '# line: ' || string(lnr) || '#\n' ;
+
+	while TRUE 
+	do	line.span(' \t')|OKE;
+
+		if ( (line.lit('/')&line.move(-1))        # new label ? #
+		   | (line.lit('EXIT')&line.move(-4))     # EXIT-clause ? #
+		   | (line.lit('<')&line.move(-1)) )      # new rule ? #
+
+		then	return
+		else
+			if line.rpos(0) fails
+			then
+				sy := sy || line.rtab(0) || '\n' ;
+			fi;
+
+			t_sy := t_PROG;
+			if line := scan_string(fsyn.get())
+			then	lnr := lnr + 1
+			else	line := scan_string(' ');
+				return
+			fi
+		fi
+	od
+);
+
+
+	# get_prog reads a set of SUMMER statements from the input.
+	  This procedure is called when labels are specified by
+	  actions. Note that in this situation layout is important.
+	  The keyword EXIT or a new label or the beginning of a
+	  new rule must be denoted at the beginng of a line. Other-
+	  wise they are assumed to belong to the collection of 
+	  statements. They may be preceded by spaces and tabs.
+	#
+
+
+
+
+
+
+
+	# PARSER PROCEDURES				#
+
+
+
+
+
+
+proc parse()
+(
+	nextsym;
+	p_grammar(s_EOF);
+);
+
+
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <code-spec> ::=
+
+	  	[ INIT ':' <summer-text> ]
+	  	( <label> ':' <summer-text> )*
+	  	[ EXIT ':' <summer-text> ]
+	#
+
+
+proc  p_code_spec(dont_skip,rule)
+( 	var label, i  ;
+	      if t_sy = t_INIT
+	      then
+	          nextsym;
+		  testsym(s_DP,UN([dont_skip,s_EXIT,s_SS]),'":"');
+	          if t_sy = t_DP
+		  then get_prog ;
+		       testsym(UN([dont_skip,s_PROG,s_SS,s_EXIT]),empty,'');
+	          fi;
+	          if t_sy = t_PROG
+	          then
+		       # Add the statements to the initcode field of
+			 the rootnode of the current production.
+		       #
+
+		       if treetab[rule].root.initcode = undefined
+		       then  treetab[rule].root.initcode := '';
+		       fi;
+		       treetab[rule].root.initcode :=
+			         treetab[rule].root.initcode || sy;
+
+
+		       nextsym;
+		       testsym(UN([dont_skip,s_SS,s_EXIT]),empty,'');
+		  else error('SUMMER statements',lnr);
+	          fi;
+	      fi;
+
+	      while t_sy = t_SS
+	      do
+		  label := p_label(UN([dont_skip,s_SS,s_EXIT,s_DP]));
+		  testsym(s_DP,UN([dont_skip,s_EXIT,s_SS]),'":"');
+	          if t_sy = t_DP
+		  then get_prog ;
+		       testsym(UN([dont_skip,s_PROG,s_EXIT,s_SS]),empty,'');
+	          fi;
+	          if t_sy = t_PROG
+	          then
+		       # Store the collection of statements in the
+			 'action'-field of every node to which
+			 the label was related. If a label is specified
+			 twice, then the last specification is saved.
+		       #
+
+
+		       if labeltab[label] ~= undefined
+		       then
+				for i in interval(0,labeltab[label].size -1,1)
+				do
+				    if labeltab[label][i] ~= undefined
+				    then
+					labeltab[label][i].action := sy;
+				    fi
+				od;
+			fi;
+
+		        nextsym;
+		        testsym(UN([dont_skip,s_SS,s_EXIT]),empty,'');
+		  else	error('SUMMER statements',lnr);
+	          fi;
+	      od;
+
+	      if t_sy = t_EXIT
+	      then
+	          nextsym;
+		  testsym(s_DP,dont_skip,'":"');
+	          if t_sy = t_DP
+	          then get_prog ;
+		       testsym(UN([dont_skip,s_PROG]),empty,'');
+	          fi;
+	          if t_sy = t_PROG
+	          then
+		       # Store the statements in the exitcode field
+			 of the root node.
+		       #
+
+		       treetab[rule].root.exitcode := sy ;
+		       nextsym;
+		       testsym(dont_skip,empty,'');
+		  else error('SUMMER statements',lnr);
+	          fi;
+	      fi;
+);
+
+
+	# code_spec handles the label specification by means of actions.
+	  The actions are read by get_prog.
+	  Note that this procedure has been adapted. get_prog is
+	  only called when a colon is found after INIT, EXIT or a label.
+	  If the colon misses, the statements will be skipped, which can
+	  cause a complete chaos.
+	#
+
+
+
+
+	# MATCHED CONSTRUCTION
+	
+	  <compound> ::=
+
+	  	'(' <rule-body> ')'
+
+	  parent_node is the alternative, of which the compound is a 
+	  subtree.
+
+	#
+
+proc  p_compound(dont_skip,parent_node)
+(	var curnode := body(parent_node,UNDECIDED);
+
+	if t_sy = t_RHO
+	then	nextsym;
+		testsym(UN([dont_skip,f_rule_body,s_RHS]),empty,'');
+		p_rule_body(UN([dont_skip,s_RHS]),curnode);
+		if t_sy = t_RHS
+		then nextsym;
+	             testsym(dont_skip,empty,'');
+		else error('")"',lnr);
+	        fi;
+  	fi;
+	curnode.type := 'c0';
+	return(curnode);
+);
+
+
+	# MATCHED CONSTRUCTION
+
+	  <alternative> ::=
+
+	  	<primary>+
+	
+	#
+
+proc  p_alternative(dont_skip,parent_node)
+(
+	var curnode;
+
+	if MEM(t_sy,f_alternative)
+	then
+		curnode := alt(parent_node,UNDECIDED);
+		if t_sy = t_SS
+		then
+      			place_label(curnode,p_label(UN([dont_skip,f_primary])));
+  		fi;
+
+  		p_primary(UN([dont_skip,f_primary]),curnode);
+  		while MEM(t_sy,f_primary)
+ 		do 	p_primary(UN([dont_skip,f_primary]),curnode);
+  		od;
+
+
+		# Check whether the information for this alternative
+		  can be assembled.
+		#
+
+		scan curnode
+		for	if first_UND = 0
+			then	get_first(subject);
+				if state = UNDECIDED
+				then	state := EMPTY
+				fi
+			fi
+		rof;
+
+		backpatch(curnode);
+	fi;
+);
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <grammar> ::=
+
+	  	[ <lexicals> ] <rule>*
+	#
+
+proc  p_grammar(dont_skip)
+(
+	testsym(UN([f_grammar,dont_skip]),empty,'');
+	if MEM(t_sy,f_grammar)
+	then
+  		if t_sy = t_LEXICAL
+  		then
+      			p_lexicals(UN([dont_skip,s_KL]));
+  		fi;
+
+  		while t_sy = t_KL
+  		do p_rule(UN([dont_skip,s_KL]));
+  		od;
+	fi;
+);
+
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <label> ::=
+
+	  	'/' <identifier> '/'
+
+	#
+
+
+proc  p_label(dont_skip)
+( 	var labelname ;
+
+	if t_sy = t_SS
+	then
+  		nextsym;
+  		testsym(s_IDENT,UN([dont_skip,s_SS]),'ident');
+  		if t_sy = t_IDENT
+  		then labelname := sy;
+		     nextsym;
+       	             testsym(UN([dont_skip,s_SS]),empty,'');
+  		fi;
+
+  		if t_sy = t_SS
+  		then nextsym;
+       	       	     testsym(dont_skip,empty,'');
+		else error('"/"',lnr);
+  		fi;
+	fi;
+	return(labelname);
+);
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <name> ::=
+
+	  	'<' <identifier> '>'
+
+	#
+
+
+proc  p_name(dont_skip)
+(
+	var name := '???';
+
+	testsym(s_KL,UN([dont_skip,s_IDENT,s_GR]),'''<''ident''>''');
+	if t_sy = t_KL
+	then
+  		nextsym;
+  		testsym(s_IDENT,UN([dont_skip,s_GR]),'"ident"');
+  		if t_sy = t_IDENT
+		then name := sy;
+  		     nextsym;
+       		     testsym(UN([dont_skip,s_GR]),empty,'');
+  		fi;
+  		if t_sy = t_GR
+  		then nextsym;
+       		     testsym(dont_skip,empty,'');
+		else error('">"',lnr);
+                fi;
+	fi;
+	return(name);
+);
+
+
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <lexicals> ::=
+
+	  	'LEXICAL' { <ident> ',' }+ '.'
+
+	  The identifiers are stored in the table 'predef'.
+	#
+
+
+proc  p_lexicals(dont_skip)
+(
+	if t_sy = t_LEXICAL
+	then
+  		nextsym;
+  		testsym(s_IDENT,UN([dont_skip,s_DOT]),'ident');
+  		while t_sy = t_IDENT
+  		do
+			predef[sy] := 1;
+    			nextsym;
+    			testsym(UN([dont_skip,s_DOT,s_IDENT,s_KOM]),empty,'');
+    			if t_sy = t_KOM
+    			then nextsym;
+         		     testsym(s_IDENT,UN([dont_skip,s_DOT]),'ident');
+    			elif MEM(t_sy,s_IDENT)
+    			then error('Separating ","',lnr);
+    			fi;
+  		od;
+  		if t_sy = t_DOT
+  		then nextsym;
+       		     testsym(dont_skip,empty,'');
+		else error('"."',lnr);
+  		fi;
+	fi;
+);
+
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <list> ::=
+
+	  	'{'  [ <label> ] <primary> 
+	       		( <terminal-symbol> | <name> )  [ <label> ]
+	  	'}'  ( '+' | '*' )
+
+	  Note that the name may only be a lexical identifier.
+	  The construction of the subtree needed to represent the
+	  list, is done by this procedure.
+	#
+
+
+proc  p_list(dont_skip,parent_node)
+(
+	var curnode,tsnode,altnode,name;
+
+	curnode := body(parent_node,UNDECIDED);
+	altnode := alt(curnode,UNDECIDED);
+
+	if t_sy = t_ACO
+	then
+  		nextsym;
+  		testsym(UN([dont_skip,r_list_0_0]),empty,'');
+  		if t_sy = t_SS
+  		then
+      		  place_label(altnode,p_label(UN([dont_skip,r_list_0_1_0_0])));
+  		fi;
+  		p_primary(UN([dont_skip,r_list_0_2]),altnode);
+  		testsym(f_list_0_3,UN([dont_skip,r_list_0_3]),
+			'Terminal symbol');
+  		if MEM(t_sy,f_list_0_3_0)
+  		then
+      			tsnode := p_terminal_symbol(UN([dont_skip,
+					r_list_0_3_0_0]),altnode);
+  		elif t_sy = t_KL
+  		then
+      			name := p_name(UN([dont_skip,r_list_0_3_1_0]));
+
+			# Check whether the "name" was a lexical-id #
+
+			if predef[name] = undefined
+			then ermsg('No rule name allowed as separator.',lnr)
+			else tsnode := term(altnode,name);
+			     tsnode.type := 't2';
+			fi;
+  		fi;
+
+		if tsnode ~= undefined
+		then	tsnode.state := EMPTY;
+			tsnode.type := tsnode.type||'1';
+		fi;
+
+  		if t_sy = t_SS
+  		then
+      		   place_label(tsnode,p_label(UN([dont_skip,r_list_0_4_0_0])));
+  		fi;
+  		if t_sy = t_ACS
+  		then nextsym;
+       		     testsym(UN([dont_skip,r_list_0_5]),empty,'');
+		else error('"}"',lnr);
+                fi;
+  		testsym(f_list_0_6,dont_skip,'"*" or "+');
+  		if t_sy = t_PLUS
+  		then
+			curnode.type := 'l02';
+			if altnode.children[0] ~= undefined
+			then	altnode.state := altnode.children[0].state;
+			fi;
+      			nextsym;
+      			testsym(dont_skip,empty,'');
+  		elif t_sy = t_MAST
+  		then
+			curnode.state := EMPTY;
+			curnode.type := 'l03';
+      			nextsym;
+      			testsym(dont_skip,empty,'');
+		else	curnode.type := '';
+  		fi;
+
+
+		# check whether the info of the alternative can be
+		  assembled.
+		#
+
+		if altnode.first_UND = 0
+		then	get_first(altnode);
+		fi;
+
+		backpatch(altnode);
+
+		# Check whether the info of the body-node can be 
+		  assembled.
+		#
+
+		if curnode.first_UND = 0
+		then	get_first(curnode);
+			if curnode.state = UNDECIDED
+			then	curnode.state := NONEMPTY;
+			fi;
+		fi;
+	fi;
+	return(curnode);
+);
+
+
+
+
+	# MATCHED CONSTRUTION
+
+	  <option> ::=
+
+	  	'[' <rule-body> ']'
+
+	#
+
+
+proc  p_option(dont_skip,parent_node)
+(
+	var curnode := body(parent_node,EMPTY);
+
+	if t_sy = t_VHO
+	then
+  		nextsym;
+  		testsym(UN([dont_skip,f_rule_body,s_VHS]),empty,'');
+  		p_rule_body(UN([dont_skip,s_VHS]),curnode);
+  		if t_sy = t_VHS
+  		then nextsym;
+       		     testsym(dont_skip,empty,'');
+		else error('"]"',lnr);
+  		fi;
+	fi;
+	curnode.type := 'o01';
+	return(curnode);
+);
+
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <primary> ::=
+
+		( ( <terminal-symbol>
+		    | <rule-call>
+		    | <compound>
+		  ) [ '+' | '*' ]
+		  | <list> | <option> )  [ <label> ] .
+
+	  Note that the repetition-indicators are represented in the
+	  'type' field of the primaries. The third character of this
+	  field denotes repitition, with the following conventions :
+	
+	  '1'  indicates no repetition.
+	  '2'  represents the '+'.
+	  '3'  represents the '*'.
+	#
+
+
+proc  p_primary(dont_skip,parent_node)
+(
+	var curnode;
+
+	testsym(f_primary,dont_skip,'primary');
+	if MEM(t_sy,f_primary)
+	then
+  		if MEM(t_sy,f_primary_0_0_0)
+  		then
+      			if MEM(t_sy,f_terminal_symbol)
+      			then
+          			curnode := p_terminal_symbol(UN([dont_skip,
+					s_PLUS,s_MAST,s_SS]),parent_node);
+      			elif MEM(t_sy,f_rule_call)
+      			then
+          			curnode := p_rule_call(UN([dont_skip,
+					s_PLUS,s_MAST,s_SS]),parent_node);
+      			elif t_sy = t_RHO
+      			then
+          			curnode := p_compound(UN([dont_skip,
+					s_PLUS,s_MAST,s_SS]),parent_node);
+      			fi;
+
+      			if t_sy = t_PLUS
+      			then
+				if curnode ~= undefined
+				then	curnode.type := curnode.type || '2';
+				fi;
+          			nextsym;
+          			testsym(UN([dont_skip,s_SS]),empty,'');
+      			elif t_sy = t_MAST
+      			then
+				if curnode ~= undefined
+				then curnode.type := curnode.type || '3';
+				     curnode.state := EMPTY;
+				fi;
+          			nextsym;
+          			testsym(UN([dont_skip,s_SS]),empty,'');
+			elif curnode ~= undefined
+			then	curnode.type := curnode.type || '1';
+      			fi;
+  		elif t_sy = t_ACO
+  		then
+      			curnode := p_list(UN([dont_skip,s_SS]),parent_node);
+  		elif t_sy = t_VHO
+  		then
+      			curnode := p_option(UN([dont_skip,s_SS]),parent_node);
+  		fi;
+  		if t_sy = t_SS
+  		then
+      			place_label(curnode,p_label(dont_skip));
+  		fi;
+	fi;
+
+	if curnode ~= undefined
+	then	backpatch(curnode);
+	fi;
+
+);
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <rule> ::=
+		<rule-def> [ <code-spec> ] .
+
+
+	  Note that the labeltab is initialized before we
+	  start with a new production.
+	#
+
+
+
+proc  p_rule(dont_skip)
+( 	var rule_name;
+	labeltab := table(10,undefined);
+	if t_sy = t_KL
+	then
+  		rule_name := p_rule_def(UN([dont_skip,f_code_spec]));
+		if MEM(t_sy,f_code_spec)
+  		then
+      			p_code_spec(dont_skip, rule_name);
+  		fi;
+	fi;
+);
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <rule-body> ::=
+		{ <alternative> '|' }* .
+
+	#
+
+
+
+proc  p_rule_body(dont_skip,parent_node)
+(
+	testsym(UN([f_rule_body,dont_skip]),empty,'');
+
+  	while MEM(t_sy,f_rule_body)
+  	do
+    		p_alternative(UN([dont_skip,
+					f_rule_body,s_MOR]),parent_node);
+    		if t_sy = t_MOR
+    		then nextsym;
+         	     testsym(f_alternative,UN([dont_skip,
+				f_rule_body]),'alternative');
+                elif MEM(t_sy,f_alternative)
+                then error('Separating "|"',lnr);
+                fi;
+        od;
+
+	# Check whether the parent-node, which is a body-node
+	  or the root-node, can be determined.
+	#
+
+
+	scan parent_node
+	for	if first_UND = 0
+		then	if child_count > 0
+			then	get_first(subject);
+				if state = UNDECIDED
+				then	state := NONEMPTY;
+				fi;
+			else	state := EMPTY;
+			fi;
+		fi;
+	rof;
+);
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <rule-call> ::=
+		[ <ident> ':' ]  <name> .
+
+	  Note that the <name>, may be a lexical identifier.
+	  A lexical identifier may not be preceded by a tag.
+	  The usage of the variables is:
+	  
+	  name :  The name of the called nonterminal or lexical id.
+	  varname : The name of the preceding tag.
+	#
+
+
+
+proc  p_rule_call(dont_skip,parent_node)
+(
+	var name,curnode,varname;
+	
+	if MEM(t_sy,f_rule_call)
+	then
+  		if t_sy = t_IDENT
+  		then
+			varname := sy;
+      			nextsym;
+      			testsym(s_DP,UN([dont_skip,s_KL]),'":"');
+      			if t_sy = t_DP
+      			then nextsym;
+           		     testsym(UN([dont_skip,s_KL]),empty,'');
+      			fi;
+  		fi;
+		name := p_name(dont_skip);
+	fi;
+
+	if name ~= undefined
+	then	if predef[name] ~= undefined
+		then	curnode := term(parent_node,name);
+			curnode.type := 't2';
+			if varname ~= undefined
+			then	ermsg('Lexical type can not return value.\n',
+						lnr);
+			fi;
+
+		else	curnode := nont(parent_node,name);
+
+			if treetab[name] = undefined
+			then	treetab[name] := tt_entry;
+			fi;
+			treetab[name].reftab[curnode] := 1;
+
+			if varname ~= undefined
+			then	var_decl[varname] := 1;
+				curnode.ass_var := varname;
+			fi;
+		fi;
+	else	curnode := nont(parent_node,'???');
+	fi;
+
+	return(curnode);
+);
+
+
+
+	# MATCHED CONSTRUCTION
+
+	  <rule-def> ::=
+		<name> '::=' <rule-body> '.' .
+
+	#
+
+
+
+proc  p_rule_def(dont_skip)
+(
+	var name;
+
+	if t_sy = t_KL
+	then
+  		name := p_name(UN([dont_skip,s_MASS,f_rule_body,s_DOT]));
+
+		if predef[name] ~= undefined
+		then ermsg('Lexical_id redefined : '||name||'.',lnr);
+		fi;
+
+		if treetab[name] = undefined
+		then treetab[name] := tt_entry;
+		fi;
+
+		if treetab[name].root ~= undefined
+		then ermsg('Nonterminal redefined : '||name||'.',lnr);
+		else treetab[name].root := rule_root(name);
+		fi;
+
+  		if t_sy = t_MASS
+  		then nextsym;
+       		     testsym(UN([dont_skip,f_rule_body,s_DOT]),empty,'');
+		else error('"::="',lnr);
+                fi;
+
+  		p_rule_body(UN([dont_skip,s_DOT]),treetab[name].root);
+
+  		if t_sy = t_DOT
+  		then nextsym;
+       		     testsym(dont_skip,empty,'');
+		else error('"."',lnr);
+                fi;
+
+		# The tags that occurred within the rule
+		  are now converted to a declaration-string, which
+		  is stored in the init-code field of the root
+		  node.
+		#
+
+		if var_decl.size > 0
+		then	var i,j := 0;
+			scan treetab[name].root
+			for	initcode := 'var ';
+				for i in var_decl.index
+				do	if j= 0
+					then j:= 1;
+					     initcode := initcode || i;
+					else initcode := initcode || ',' || i
+					fi;
+				od;
+				initcode := initcode || ' ;\n';
+			rof;
+			var_decl := table(5,undefined);
+		fi;
+	fi;
+	return(name);
+);
+
+
+
+	# MATCHED CONSTRUCTION
+	
+	  <terminal-symbol> ::=
+		<keyword> | <string> .
+
+	  Note that the three possible terminal symbols, e.g.
+	  keywords, strings and lexical id's (which is matched
+	  in procedure p_rule_call), cause different type fields
+	  in their nodes.
+	  The types are:
+	  't0' : keyword
+	  't1' : string
+	  't2' : lexical identifier
+	#
+
+
+
+proc  p_terminal_symbol(dont_skip,parent_node)
+(
+	var symbol,curnode,tiep;
+
+	testsym(f_terminal_symbol,dont_skip,'terminal_symbol');
+	if t_sy = t_KEYWORD
+	then
+		symbol := sy.replace(upper,lower);
+		symtab[symbol] := 1;
+		tiep := 't0';
+  		nextsym;
+  		testsym(dont_skip,empty,'');
+	elif t_sy = t_STRING
+	then
+		symbol := sy;
+		chartab[sy] := 1;
+		tiep := 't1';
+  		nextsym;
+  		testsym(dont_skip,empty,'');
+	fi;
+	curnode := term(parent_node,symbol);
+	curnode.type := tiep;
+	return(curnode);
+);
+
+
+
+
+
+
+	#******************************************************#
+	#                                                      #
+	#						       #
+	#	    SUPPORTING ROUTINES			       #
+	#  						       #
+	#						       #
+	#******************************************************#
+
+
+
+
+
+proc place_label(node,label)
+(
+	if label ~= undefined
+	then	if labeltab[label] = undefined
+		then	labeltab[label] := flex(3,undefined)
+		fi;
+		labeltab[label][labeltab[label].size] := node
+	fi
+);
+	# place_label stores the node for which a label has
+	  been read in the table 'labeltab'. The nodes in
+	  labeltab are visited when the label is read
+	  together with some Summer statements at the end
+	  of a production rule.
+	#
+
+
+proc get_first( node )
+( 	var i, j;
+
+ 	if node.firstsyms.size > 0
+  	then return;
+  	fi;
+
+  	if type(node) = 'alt'
+  	then  scan node
+	      for   if point = undefined
+		    then point:= child_count-1;
+		    fi;
+
+		    for i in interval(0,point,1)
+		    do
+			if type(children[i]) = 'term'
+			then	firstsyms[children[i].symbol] := 
+				      	firstsyms[children[i].symbol] + 1;
+			else    var childnode :=
+					if type(children[i]) = 'nont'
+					then 	treetab[children[i].name].root;
+                                        else    children[i];
+					fi;
+
+				for j in childnode.firstsyms.index
+                                do      firstsyms[j] := firstsyms[j] + 1;
+				od;
+			fi;
+		    od;
+	      rof;
+	else	scan node
+		for
+                	for i in interval(0,child_count-1,1)
+			do
+				for j in children[i].firstsyms.index
+				do	firstsyms[j] := firstsyms[j] + 1
+				od;
+			od;
+		rof;
+  	fi;
+);
+
+
+	# get_first assembles the firstset for a node. Note
+	  the different algorithm for an alt node. get_first
+	  is only called with node being an alt, a body or a
+	  rule_root.
+	#
+
+
+
+
+
+proc backpatch( curnode )
+(
+  	scan curnode
+	for	if type(curnode) = 'alt'
+		then
+			if first_UND > 0
+			then	parent.first_UND := parent.first_UND + 1;
+			fi;
+
+			if state = EMPTY
+			then	parent.state := EMPTY
+			fi;
+		else
+			if state = NONEMPTY
+			then
+				parent.state := NONEMPTY;
+				if parent.point = undefined
+				then 	parent.point := seqnr;
+				fi;
+			fi;
+
+			if first_UND > 0 & parent.point = undefined
+			then
+				parent.first_UND := parent.first_UND + 1;
+			fi;
+
+		fi;
+  	rof;
+);
+
+
+
+	# backpatch patches the information of curnode one level upwards.
+	  The algorithm is a clear and straightforward implementation
+	  of the relations that were specified in the implementation
+	  description. Together with some actions within the parsing
+	  routines, this procedure forms the first-phase of the 
+	  information-retrieval process
+	#
+	
+
+
+
+
+
+proc fill_in(node)
+( 
+	var i;
+	if type(node.parent) = 'alt'
+	then
+		scan node
+		for
+			if state = EMPTY
+			then	if parent.point = undefined |
+					seqnr < parent.point
+				then	parent.first_UND := parent.first_UND-1;
+				fi;
+			elif parent.point = undefined | seqnr < parent.point
+			then
+				parent.state := NONEMPTY;
+				parent.point := seqnr;
+				parent.first_UND := 0;
+
+				# Reset the information in the parent node
+				  concerning point and first_UND
+				#
+
+				for i in interval(0,parent.point,1)
+				do
+					if parent.children[i].first_UND > 0
+					then parent.first_UND :=
+						parent.first_UND +1;
+					fi;
+				od;
+			fi;
+
+			if parent.first_UND = 0
+                        then    get_first(parent);
+				if parent.state = UNDECIDED
+				then parent.state := EMPTY;
+				fi;
+
+				if parent.point = undefined |
+					seqnr <= parent.point
+				then	fill_in(parent);
+				fi;
+			fi;
+		rof;
+	else	
+		# Parent node is a body node, therefore this node
+		  is an alternative.
+		#
+
+
+		scan node 
+		for	parent.first_UND := parent.first_UND-1;
+			if state = EMPTY
+			then parent.state := EMPTY;
+			fi;
+
+			if parent.first_UND = 0
+                        then    get_first(parent);
+				if parent.state = UNDECIDED
+				then parent.state := NONEMPTY;
+				fi;
+
+				if type(parent) ~= 'rule_root'
+				then	fill_in(parent);
+				fi;
+			fi;
+		rof;
+	fi;
+);
+
+
+
+	# fill-in is used in the second phase of the information
+	  retrieval process. The information of the parameter node
+	  is passed on to the parent-level. This parent node
+	  now decides which actions it must do. When the parent
+	  node is determined, this procedure is called recursively.
+	  The first time, fill-in is called with a nonterminal. This
+	  call is performed by roll-up(), which passes on the information
+	  of a determined production to the reference points.
+	#
+
+
+
+
+
+proc roll_up()
+( 	var dec_cnt, l_dec_cnt, callset,pr;
+
+  	rule_cnt := treetab.size;
+  	dec_cnt := 0;
+
+  	while dec_cnt < rule_cnt
+  	do
+		l_dec_cnt := 0;
+		for pr in treetab.index
+		do
+	  		if treetab[pr].filled_in = FALSE
+		        	& treetab[pr].root.first_UND = 0
+	          	then  	treetab[pr].filled_in := TRUE;
+				l_dec_cnt := l_dec_cnt + 1;
+
+				for callset in treetab[pr].reftab.index
+				do
+					if callset.state = UNDECIDED
+					then
+						callset.state := treetab[pr].root.state ;
+					fi;
+
+					callset.first_UND := 0;
+					fill_in(callset);
+				od;
+	  		fi;
+		od;
+
+		if l_dec_cnt = 0
+		then
+			freturn;
+		else
+			dec_cnt := dec_cnt + l_dec_cnt ;
+		fi;
+  	od;
+);
+
+
+	# roll-up is a part of the second phase of the retrieval process.
+	  It keeps on filling-in references of productions that are
+	  determined, until there are no productions left, or some can not
+	  be determined. The latter case implies a left recursive set of rules
+	  The meaning of the variables is :
+
+	  rule_cnt :  The number of productions in the grammar.
+	  dec_cnt  :  The number of productions whose information
+		      is determined.
+	  l_dec_cnt:  The number of rules that were determined and not
+		      yet filled-in, during the last pass over all productions.
+		      When l_dec_cnt equals zero and not all rules
+		      are determined yet, we have found a left recursion.
+	#
+
+
+
+
+
+#
+	*************************************************
+	*						*
+	*	LL(1) CHECK				*
+	*						*
+	*************************************************
+#
+
+
+
+
+
+proc get_follow( node )
+( 	var tmpfol := table(10,undefined);
+
+	while type(node)~='rule_root' & node.seqnr=node.parent.child_count-1
+	do	node:=node.parent.parent;
+		if type(node) ~= 'rule_root' & node.type[2] > '1' & 
+				node.type[0] ~= 'l'
+		then tmpfol := untab(tmpfol,node.firstsyms);
+		     if path[node] ~= undefined
+		     then	return( tmpfol )
+		     fi;
+		fi;
+	od;
+
+	if type(node) = 'rule_root'
+	then
+		if path[node] = undefined
+		then
+			if node.follow = undefined
+			then	#  Determine the follow set of the production
+				   Get the follow symbols of all the references
+				   in other productions
+			        #
+
+				var foll := table(5,undefined), callnode;
+
+				path[node] := 1;
+				for callnode in treetab[node.name].reftab.index
+				do
+					foll := untab(foll,get_follow(callnode));
+				od;
+				path[node] := undefined;
+				node.follow := foll;
+			fi;
+			return(untab(tmpfol,node.follow));
+		else	return(tmpfol);
+		fi;
+
+	else	# Go to the right-neighbor-node.
+		  Add the firstsymbols to the followset.
+		  If this node can produce the empty sentence
+		  get_follow is called recursively.
+		#
+
+		node := node.parent.children[node.seqnr + 1];
+
+		case type(node) of
+
+		'term' :	tmpfol[node.symbol] := 1,
+		'nont' :	tmpfol := untab(tmpfol,
+					treetab[node.name].root.firstsyms),
+		'body' :	tmpfol := untab(tmpfol,node.firstsyms);
+		esac;
+
+		if node.state = NONEMPTY | path[node] ~= undefined
+		then	return(tmpfol);
+		else	path[node] := 1;
+			tmpfol := untab(tmpfol,get_follow(node));
+			path[node] := undefined;
+			return(tmpfol);
+		fi;
+	fi;
+);
+
+
+	# get_follow collects a set of followsymbols for a node.
+	  The right-neighbor of the node is examined; it's firstsymbols
+	  are added to the wanted followset. If this node is EMPTY,
+	  the process continues to do the same for the next node.
+	  If the end of a production rule is reached in this way,
+	  the firstsets of all calling nodes are added to the wanted
+	  followset.
+
+	  tmpfol contains the followset within the current production.
+	#
+
+
+proc untab(tab1,tab2)
+( 	var i, h := table(5,undefined);
+	for i in tab1.index
+	do
+		h[i] := tab1[i];
+	od;
+	for i in tab2.index
+	do
+		h[i] := tab2[i];
+	od;
+	return(h);
+);
+	# returns the union of two tables
+	#
+
+
+
+
+
+
+proc LL1_check()
+( 	var pr;
+
+	for pr in treetab.index
+	do
+		restr1(treetab[pr].root,pr);
+	od;
+);
+	# checks the grammar for LL(1) violations
+	#
+
+
+
+
+
+proc pkf_code(node)
+( 	var str1;
+
+	case type(node) of
+        'term' : str1 := '''' || node.symbol || '''',
+	'nont' : str1 := '<'||node.name||'>',
+	'body' : var i,str2;
+		 case node.type[0] of
+		 'c' :	str1 := '(';str2 := ')',
+		 'o' :	str1 := '[';str2 := ']',
+		 'l' :  str1 := '{';str2 := '}';
+		 esac;
+
+		 str1 := str1 || ' .. ';
+		 for i in interval(1,node.child_count-1,1)
+		 do str1 := str1 || '| .. ';
+		 od;
+		 str1 := str1 || str2;
+	esac;
+
+	case node.type[2] of
+	'1' : return(str1),
+	'2' : return(str1 || '+'),
+	'3' : return(str1 || '*');
+	esac;
+);
+	# pkf_code returns a string with the meta notation of the
+	  construction of the node. It's used to expose the error
+	  messages.
+	#
+
+
+proc put_err_syms(node,syms)
+(
+	var i,j:=0;
+
+	put(' Symbols : ');
+	for i in syms do
+		if j > 0
+		then put(' , ');
+		else j:=1;
+		fi;
+		put(i);
+	od;
+	put('\n');
+);
+	# prints the symbols involved in an error
+	#
+
+
+
+
+
+
+proc restr1(node,name)
+
+( 	var i,errsyms := table(5,undefined),emptycount := 0;
+
+	for i in node.firstsyms.index
+	do
+		if node.firstsyms[i] > 1
+		then errsyms[i] := 1;
+		fi;
+	od;
+
+	if errsyms.size > 0
+	then restr1_err(node,name,errsyms.index);
+	fi;
+
+	for i in interval(0,node.child_count-1,1)
+	do
+		restr2(node.children[i],name);
+
+		if node.children[i].state = EMPTY
+		then	emptycount := emptycount + 1
+		fi
+
+	od;
+
+	if emptycount >= 2
+	then	restr1_err(node,name,[]);
+		put(' ',emptycount,' alternatives can be empty.\n');
+		put(' The alternatives involved are : ');
+		for i in interval(0,node.child_count-1,1)
+		do	if node.children[i].state = EMPTY
+			then	put(i+1,'  ');
+			fi;
+		od;
+		put('\n\n');
+	fi;
+);
+	# checks for restriction 1 errors: the firstsets of
+	  two or more possibilities in the grammar must be
+	  disjunct.
+	#
+
+
+proc restr1_err(node,name,syms)
+(
+	var i, j, error;
+	put('\n Restriction 1, rule : ',name,'\n');
+	if type(node) ~= 'rule_root'
+	then put(' In : ',pkf_code(node),'\n');
+	fi;
+	
+	if syms.size > 0
+	then
+		put_err_syms(node,syms);
+
+		put(' the symbols occur in:\n');
+		for i in interval(0,node.child_count - 1 ,1)
+		do
+			error := 0;
+			for j in syms
+			do
+				if node.children[i].firstsyms[j] ~= 0
+				then
+					error := 1;
+				fi;
+			od;
+			if error = 1
+			then
+				put('\talternative ',i + 1,'\n');
+			fi;
+		od;
+	fi;
+	errcnt := errcnt + 1;
+);
+	# error message handler for LL(1) restriction 1 errors
+	#
+
+
+proc restr2(node, name)
+( 	var i, follow,errsyms:= table(5,undefined);
+
+	for i in node.firstsyms.index
+	do
+                if node.firstsyms[i] > 1
+		then	errsyms[i] := 1;
+		fi;
+	od;
+
+	if errsyms.size > 0
+	then	restr2_err(node,name,errsyms.index);
+		errsyms:=table(5,undefined);
+	fi;
+
+	for i in interval(0, node.point - 1, 1)
+	do
+		if type(node.children[i]) = 'body'
+		then
+			restr1(node.children[i],name);
+		fi;
+	od;
+
+	for i in interval(node.point, node.child_count - 1, 1)
+	do
+		if type(node.children[i]) = 'body'
+		then
+			restr1(node.children[i], name)
+		fi;
+
+		if node.children[i].state = EMPTY |
+			node.children[i].type[2] = '2'
+		then
+			path[node.children[i]] := 1;
+			follow := get_follow(node.children[i]);
+			path[node.children[i]] := undefined;
+
+			if type(node.children[i]) = 'term'
+			then
+				if follow[node.children[i].symbol] ~= undefined
+				then
+				   restr2_err(node.children[i],name,
+					[node.children[i].symbol]);
+				fi
+			else
+				var x,
+				chno := if type(node.children[i]) = 'body'
+					then node.children[i]
+					else
+					   treetab[node.children[i].name].root;
+				        fi;
+
+				for x in chno.firstsyms.index
+                                do
+                                        if follow[x] ~= undefined
+					then errsyms[x] := 1;
+                                        fi;
+                                od;
+
+				if errsyms.size > 0
+				then
+				   restr2_err(node.children[i],
+					name,errsyms.index);
+				     errsyms:=table(5,undefined);
+				fi;
+			fi;
+		fi;
+	od;
+);
+	# checks for restriction 2 errors: the firstset and the
+	  set of symbols, that can succeed an optional construction
+	  must be disjunct. Note that a sequence partially behaves
+	  like an option.
+	#
+
+
+proc restr2_err(node,name,syms)
+(
+	put(' Restriction 2, rule : ',name,'\n');
+	put(' In : ');
+	if type(node) = 'alt'
+	then	var i;
+		for i in interval(0,node.point,1)
+		do put(pkf_code(node.children[i]),' ');
+		od;
+		put('\n');
+	else	put(pkf_code(node),'\n');
+	fi;
+
+	put_err_syms(node,syms);
+        errcnt := errcnt + 1;
+);
+	# error message handler for LL(1) restriction 2 errors
+	#
+
+
+
+
+
+
+#
+	*************************************************
+	*						*
+	*	CODE GENERATION				*
+	*						*
+	*************************************************
+#
+
+proc gencode (curnode, level, curname)
+( 	var i;
+
+  case type(curnode) of
+  'alt':
+	rdecl(curnode,curname);
+	put_action(curnode.action, level);
+
+	for i in interval(0,curnode.child_count - 1, 1)
+	do
+	     gencode(curnode.children[i],level,curname || '_' || string(i));
+	od;
+	if get_first_name(curnode,curname) = 'f_'||curname
+	then 	fdecl(curnode,curname);
+	fi,
+
+
+
+  'body':
+        var ind := curnode.type[2];
+
+	if curnode.state = NONEMPTY & curnode.seqnr > 0
+	then
+                cout.put(level,testsym_code(curnode,curname,err_msg(curnode)));
+	fi;
+
+
+	case curnode.type[0] of
+	'c':
+		if ind > '1'
+		then
+			if ind = '2' & curnode.state = EMPTY
+			then	cout.put(level,'( var i_',curname,' := 0;\n');
+				level := level || '  ';
+				cout.put(level,'while ', 
+                                 get_first_name(curnode,curname),'[t_sy] = 1 | i_'
+					,curname,' = 0\n');
+			else	cout.put(level,'while ',
+				get_first_name(curnode,curname),'[t_sy] = 1\n');
+			fi;
+			cout.put(level,'do\n');
+			body_code(curnode,level || '  ',curname);
+			if ind = '2' & curnode.state = EMPTY
+			then	cout.put(level,'i_',curname,' := 1;\n');
+			fi;
+			cout.put(level,'od;\n');
+			if ind = '2' & curnode.state = EMPTY
+			then	level := level.substr(0,level.size-2);
+				cout.put(level,');\n');
+			fi;
+		else
+			body_code(curnode,level,curname);
+		fi,
+
+	'o':
+		body_code(curnode,level,curname),
+
+	'l':
+		var tsco,defco;
+                if ind = '2' & curnode.state = EMPTY
+                then    cout.put(level,'( var i_',curname,' := 0;\n');
+                        level := level || '  ';
+                        cout.put(level,'while ',
+                          get_first_name(curnode,curname),'[t_sy] = 1 | i_'
+                                    ,curname,' = 0\n');
+                else    cout.put(level,'while ',
+                          get_first_name(curnode,curname),'[t_sy] = 1\n');
+                fi;
+		cout.put(level,'do\n');
+		put_action(curnode.children[0].action, level || '  ');
+		rdecl(curnode.children[0],curname || '_0');
+		gencode(curnode.children[0].children[0],level || '  ',
+			curname || '_0_0');
+
+                cout.put(level,'  if t_sy = ',
+                        symtab[curnode.children[0].children[1].symbol],'\n');
+                cout.put(level,'  then\n');
+		put_action(curnode.children[0].children[1].action,
+			level || '    ');
+		cout.put(level,'    nextsym;\n');
+
+		tsco := testsym_code(curnode.children[0].children[0],curname ||
+					'_0_0',
+				err_msg(curnode.children[0].children[0]));
+
+		if scan tsco for
+			defco := find('r_'||curname||'_0_0')
+			& lit('r_'||curname||'_0_0')
+			& (defco := defco || 'r_'||curname||'_0_1')
+			& (defco := defco || rtab(0))
+		   rof
+		then tsco := defco;
+		fi;
+
+		# This is indeed a very cryptic construction. Nevertheless
+		  It is needed to generate good code for the list 
+		  construction. The troubles are caused by the call of
+		  the procedure testsym_code. The construction that is
+		  expected, is the first grand-son of the current node.
+		  The remainderset that we need is however the remainderset
+		  of the second grand-son (the separating terminal-symbol).
+		  This expression changes the name of the remainderset used
+		  in the code generated by testsym_code, into the correct
+		  name. This means substituting the last '_0_0' of the re-
+		  mainder-name into '_0_1'.
+		#
+
+
+		cout.put(level,'    ',tsco);
+		cout.put(level,'  elif ',get_first_name(curnode
+		   .children[0].children[0],curname||'_0_0'),'[t_sy] = 1\n');
+		cout.put(level,'  then error(''Separating "',curnode
+		   .children[0].children[1].symbol,'"'',lnr);\n');
+                cout.put(level,'  fi;\n');
+                if ind = '2' & curnode.state = EMPTY
+                then    cout.put(level,'i_',curname,' := 1;\n');
+                fi;
+                cout.put(level,'od;\n');
+                if ind = '2' & curnode.state = EMPTY
+                then    level := level.substr(0,level.size-2);
+                        cout.put(level,');\n');
+                fi;
+	esac;
+
+	put_action(curnode.action,level);
+	if get_first_name(curnode,curname) = 'f_'||curname
+	then	fdecl(curnode,curname);
+	fi,
+
+  'term':
+        var ind := curnode.type[2];
+
+	if ind < '3' & curnode.seqnr > 0
+	then	cout.put(level,'if t_sy = ',symtab[curnode.symbol],'\n');
+		cout.put(level,'then\n');
+		level := level || '  ';
+	fi;
+
+	if ind > '1'
+	then	cout.put(level,'while t_sy = ',symtab[curnode.symbol],'\n');
+		cout.put(level,'do\n');
+		level := level || '  ';
+	fi;
+
+	put_action(curnode.action,level);
+        cout.put(level,'nextsym;\n');
+	cout.put(level,'testsym(');
+
+	if remsets['r_'||curname] ~= undefined
+	then cout.put('UN2(dont_skip,r_',curname,'),EMPTY,'''');\n');
+	else cout.put('dont_skip,EMPTY,'''');\n');
+	fi;
+
+	if ind > '1'
+	then
+		level := level.substr(0,level.size-2);
+		cout.put(level,'od;\n');
+	fi;
+
+	if curnode.seqnr > 0 & ind < '3'
+	then
+		level := level.substr(0,level.size-2);
+		cout.put(level,'else error(''"',curnode.symbol,'"'',lnr);\n');
+		cout.put(level,'fi;\n');
+	fi,
+
+  'nont':
+        var ind := curnode.type[2],
+	    ds := 	if remsets[ 'r_'||curname ] ~= undefined
+			then	'UN2(dont_skip,r_' || curname || ')'
+			else	'dont_skip'
+			fi;
+
+
+	if ind < '3'
+	then	if curnode.ass_var ~= undefined
+		then cout.put(level,curnode.ass_var,
+			' := p_',curnode.name,'(',ds,');\n')
+		else cout.put(level,'p_',curnode.name,'(',ds,');\n')
+		fi;
+		put_action(curnode.action,level);
+	fi;
+
+	if ind > '1'
+	then	cout.put(level,'while ',
+				get_first_name(curnode,curname),'[t_sy] = 1\n');
+		cout.put(level,'do ');
+		if curnode.ass_var ~= undefined
+		then	cout.put(curnode.ass_var,' := p_',
+				curnode.name,'(',ds,');\n');
+		else	cout.put('p_',curnode.name,'(',ds,');\n');
+		fi;
+		put_action(curnode.action,level || '  ');
+		cout.put(level,'od;\n');
+	fi,
+
+  'rule_root':
+
+	if curnode.name = startsym
+	then
+		# generate program declaration  #
+
+		cout.put('program  p_',curname,'(args)\n');
+		cout.put('(\n  var dont_skip := s_',symtab['EOF'],';\n');
+
+	else	cout.put('\n\nproc  ','p_',curname,'(dont_skip)\n');
+		cout.put('(\n');
+	fi;
+
+	level := '  ';
+	put_action(curnode.initcode,level);
+
+	if curnode.name = startsym
+	then	cout.put(level,'nextsym;\n');
+	fi;
+
+
+	if curnode.firstsyms.size > 0 | curnode.name = startsym
+        then    cout.put(level,
+			testsym_code(curnode,curname,'<' ||curnode.name|| '>'));
+	fi;
+
+	body_code(curnode,level,curname);
+
+	put_action(curnode.exitcode,level);
+	if curnode.name = startsym
+	then	cout.put(level,'if errcnt > 0\n',level,'then stop(1)\n',
+			 level,'fi;\n');
+	fi;
+        cout.put(');\n');
+	fdecl( curnode, curname );
+  esac;
+);
+	# generates in a recursive way, code for the whole grammar and
+	  calls fdecl and rdecl to declare first- and remainder-sets
+	  The meaning of the parameters :
+
+	  curnode : the node for which code must be generated.
+	  level   : string containing spaces; used to format the
+		    generated programs. Every recursion level implies
+		    further indenting.
+	  curname : string that is used to get unique names for remainder-
+		    sets and first-sets. Every new recursion level adds
+		    a number to curname. The number added is the sequence-
+		    number of the current node in the children-array of it's
+		    parent_node.
+
+	  Note that firstsets are only declared when it's needed. This
+	  means that firstsets which consist of one symbol are globally
+	  represented by the set for that symbol. The name of a firstset
+	  is determined by the procedure get_first_name.
+
+	  The remaindersets are only mentioned, when they are declared.
+	  This can be checked by referring the table remsets. The remain-
+	  dersets are declared in the procedure rdecl.
+
+	  Body-nodes for constructions followed by a '+' can cause diffi-
+	  culties. When one of the alternatives of that body has state 
+	  EMPTY, the code must be visited when the empty sentence occurs.
+	  For these nodes, a repeat-until construction is simulated, by
+	  generating the following code :
+
+		(  var i_ ... := 0;  ( ... is the current name (curname))
+
+		   while ...[t_sy] = 1 | i_... = 0
+		   do
+				code for the body node
+				i_... := 1;
+		   od;
+
+		);
+
+	  This scheme ensures that the code for the body, and the associated
+	  actions are executed at least once, even when the empty sentence
+	  occurs. 
+	  Note that the state of the body-node must be EMPTY, and that the
+	  the corresponding construction must have been followed by a '+'.
+	  If this isn't true, then the normal code for such cases is generated.
+	#
+
+
+
+
+
+proc put_action(action,level)
+(	var line := '';
+
+	if action ~= undefined
+	then	scan action
+		for	while  line := level || break('\n')
+			do	cout.put(line,'\n');
+				move(1)
+			od
+		rof
+	fi;
+);
+	# prints the action on the .co file
+	#
+
+
+proc testsym_code(node,path,mess)
+(	var remainder_name,main_part,first_name;
+
+	first_name := get_first_name(node,path);
+	remainder_name := if remsets['r_'||path] ~= undefined
+	      		  then	'r_'||path;
+	      		  else	undefined;
+	      		  fi;
+
+	if node.state = EMPTY
+	then	main_part := '(' || first_name || ',dont_skip';
+		if remainder_name ~= undefined
+		then main_part := 'UN3' || main_part || ',' || remainder_name;
+		else main_part := 'UN2' || main_part;
+		fi;
+		main_part := main_part || '),EMPTY,'''');';
+	else	main_part := first_name || ',';
+
+		if remainder_name ~= undefined
+		then	main_part := main_part || 'UN2(dont_skip,' ||
+				remainder_name || '),';
+		else	main_part := main_part || 'dont_skip,';
+		fi;
+
+		main_part := main_part || '''' || mess || ''');';
+	fi;
+
+	return('testsym(' || main_part || '\n');
+);
+
+
+	# Generates text for a call of the procedure testsym. The 
+	  construction that is expected is represented by node. 
+	  Note the difference between nodes whose state is EMPTY, and
+	  nodes whose state is NONEMPTY.
+	#
+
+
+
+proc fdecl( node, pathname )
+(
+	var syms := node.firstsyms.index;
+
+	if syms.size ~= 1
+	then	var i,j:=0,str := '\tf_'||pathname||' := SET([';
+		for i in syms
+		do	if j > 0
+			then str := str || ',';
+			fi;
+			j := j+1;
+			str := str ||  string(symtab[i]) ;
+		od;
+		fout.put(str||']),\n');
+	fi;
+);
+	# declare a first_set in the .fs file
+	  This procedure is only called, when the firstset cannot be
+	  represented by the name of another set.
+	#
+
+
+
+
+
+proc body_code(node,level,name)
+(
+	  var i,j,emptycall;
+	  cout.put(level);
+
+	  for i in interval(0,node.child_count-1,1)
+	  do
+		j := node.children[i].firstsyms.index;
+
+		if node.children[i].state=EMPTY& (type(node) = 'rule_root'|
+						node.type[0] ~= 'o')
+		then	emptycall := [ node.children[i],i]
+		else
+			if j.size = 1
+	                then    cout.put('if t_sy = ',symtab[j[0]],'\n');
+			else	cout.put('if ',
+				  get_first_name( node.children[i]
+					,name||'_'||string(i)),'[t_sy] = 1\n');
+			fi;
+
+			cout.put(level,'then\n');
+		        gencode(node.children[i],level ||
+				'  ',name||'_'||string(i));
+
+			if i = node.child_count-1 & emptycall = undefined
+			then cout.put(level,'fi;\n');
+			else cout.put(level,'el');
+			fi;
+		fi;
+	  od;
+	  if emptycall ~= undefined
+	  then	if node.child_count > 1
+		then	cout.put('se\n');
+		fi;
+		gencode(emptycall[0],level ||
+				'  ',name||'_'||string(emptycall[1]));
+		if node.child_count > 1
+		then	cout.put(level,'fi;\n');
+		fi;
+	  fi;
+);
+
+	# This procedure creates the surrounding code for a body-node.
+	  If an alternative can produce the empty sentence, then the
+	  code for this alternative is put in an else-branch if the
+	  number of alternatives is larger than one. When there is
+	  only one alternative, and when this alternative has state EMPTY,
+	  the code for that specific alternative is not surrounded by
+	  an if-statement.
+	#
+
+
+
+
+
+
+proc get_parent(pathname)
+(	var rb;
+	scan pathname.reverse for
+		break('_');
+		move(1);
+		rb := rtab(0);
+	rof;
+	return(rb.reverse);
+);
+	# returns the name of the parent
+	#
+
+
+
+
+
+
+proc rdecl(node,pathname)
+(
+  var i,str1,str2,ndcl;
+
+  for i in interval(node.child_count-1,0,-1)
+  do
+        str1 := 'r_'||pathname||'_'||string(i);
+	ndcl := 0;
+
+	if i = node.child_count-1
+	then
+		str2 := 'r_' || get_parent(pathname);
+
+		if remsets[str2] ~= undefined
+		then ndcl := 1;
+		else str2 := '';
+		fi;
+	else	str2 := get_first_name(node.children[i+1],pathname ||
+				'_'||string(i+1));
+		ndcl:=1;
+		if remsets['r_'||pathname|| '_' ||string(i+1)] ~= undefined
+		then	ndcl := 2;
+			str2 := str2 || ',r_' ||pathname|| '_' ||string(i+1);
+		fi;
+	fi;
+
+	if node.children[i].type[2] > '1'
+	then
+		if str2 ~= ''
+		then str2 := str2||',';
+		fi;
+		ndcl := ndcl + 1;
+		str2 := str2 || get_first_name(node.children[i],pathname ||
+				'_'||string(i));
+	fi;
+
+	if ndcl > 0
+	then	remsets[str1] := 1;
+		if ndcl = 1
+	        then    str1 := str1 || ' := ' || str2;
+		elif ndcl = 2
+	        then    str1 := str1 || ' := ' || 'UN2(' || str2 || ')';
+                else    str1 := str1 || ' := ' || 'UN3(' || str2 || ')';
+		fi;
+		sout.put(',\n\t',str1);
+	fi;
+
+  od;
+);
+	# declares the so called remainderset for all nodes of an 
+	  alternative. The remainderset is defined recursively. Whenever
+	  a set is declared,i.e. written on the file sout, the name is
+	  entered in the table remsets. The procedure gencode can use
+	  this information. 
+	  The number of remsets can be decreased, by not declaring remsets
+	  that consist of one symbol. The string that defines the remainder-
+	  set is than the value of the entry of the remaindername in remsets.
+	  The application of this method implies modifications, where ever
+	  the remaindersets, or their names are used.
+	#
+
+
+
+
+
+
+proc get_first_name(node,pathname)
+(
+  if type(node) ~= 'rule_root' & node.parent.child_count = 1
+  then	return( get_first_name(node.parent,get_parent(pathname)));
+  fi;
+
+  case type(node) of
+
+  'term' :
+	  return('s_'||string(symtab[node.symbol])),
+
+  'nont' :
+	  var ss := treetab[node.name].root.firstsyms.index;
+
+	  if ss.size ~= 1 
+	  then	return('f_'||node.name);
+          else  return('s_'||string(symtab[ss[0]]));
+	  fi,
+
+  'rule_root':
+  'body' :
+  'alt'  :
+	  var ss := node.firstsyms.index;
+
+	  if ss.size ~= 1
+	  then return('f_'||pathname);
+	  else return('s_'||string(symtab[ss[0]]));
+	  fi;
+
+  esac;
+);
+	# returns the name for the firstset of node 'node'.
+	#
+
+
+
+
+
+
+proc err_msg(node)
+(
+	if type(node) = 'nont'
+        then    return('<' || node.name || '>')
+	elif type(node) = 'term'
+        then    return('"' || node.symbol || '"');
+	else
+		var i, j, mesg;
+
+		j := node.firstsyms.index;
+		i := 0;
+
+		while i < 5 & i < j.size
+		do
+			if i = 0
+			then
+				mesg := '"' ;
+			else
+				if i = j.size - 1 | i = 4
+				then
+					mesg := mesg || '" or "';
+				else
+					mesg := mesg || '","';
+				fi;
+
+			fi;
+	
+			mesg := mesg || j[i];
+			i := i +1;
+		od;
+
+		if j.size > 5
+		then
+			mesg := mesg || '" etc.';
+		else
+			mesg := mesg || '"';
+		fi;
+
+		return(mesg);
+	fi;
+);
+	# return an error message for a node. 
+	  If the node is not a nonterminal, the message is created, using
+	  the first-symbols of the node. Max. 5 symbols are given in such
+	  a message.
+	#
+
+
+
+
+
+
+
+program pgen( BASE )
+(
+	var w,i;
+
+
+	# open the input and output files #
+
+
+	if (fsyn := file(BASE[0],'r')) fails
+	then	put('PGEN: cannot open syntax-file\n');
+		stop(1)
+	fi;
+
+
+	if (tout := file(BASE[0]||'.tb','w') &
+	    sout := file(BASE[0]||'.rs','w') &
+	    cout := file(BASE[0]||'.co','w') &
+	    fout := file(BASE[0]||'.fs','w') ) fails
+	then
+		put('PGEN: cannot open intermediate files\n');
+		stop(1);
+	fi;
+
+
+
+
+	parse();
+
+
+
+	# Look for undefined nonterminals		#
+
+
+	for w in treetab.index 
+	do	if treetab[w].root = undefined & w ~= '???'
+		then	put(' Nonterminal ',w,' not declared.\n');
+			errcnt:=errcnt + 1;
+		fi;
+	od;
+
+
+
+	if errcnt = 0
+	then
+		# Find the start symbol of the grammar  #
+
+
+		var startsymbols := table(5,undefined);
+
+		for w in treetab.index 
+	        do      if treetab[w].reftab.size = 0
+			then
+				startsym := w;
+				startsymbols[w] := 1;
+	                fi;
+		od;
+
+		if startsymbols.size = 0
+		then  put(' No correct startsymbol found.\n');
+		      errcnt := errcnt + 1;
+		elif  startsymbols.size > 1
+		then
+		      var i;
+		      put(' More than one startsymbol found.\n');
+		      put(' Startsymbols: ');
+		      for i in startsymbols.index
+		      do
+			put(' <',i,'>');
+		      od;
+		      put('\n');
+		      errcnt := errcnt + 1;
+		else
+		      # The followset of the start symbol consists of
+			the end-of-file symbol
+		      #
+
+		      treetab[startsym].root.follow :=
+						    table(1,undefined);
+		      treetab[startsym].root.follow['EOF'] := 1;
+		fi;
+
+	fi;
+
+	if errcnt = 0
+	then	if roll_up fails
+		then
+		     put(' First_sets of the following rules ',
+				'cannot be determined\n');
+
+		     for w in treetab.index 
+		     do if treetab[w].filled_in = FALSE
+                        then put(' ** ',w,' **\n');
+			fi;
+		     od;
+		     errcnt := errcnt + 1;
+		fi;
+	fi;
+
+	if errcnt = 0
+	then LL1_check();
+	fi;
+
+
+	if errcnt = 0
+	then
+		# Generate table declarations	
+		  Note that after this declaration, symtab contains
+		  all the symbols of the grammar, with their type
+		  values for the generated parser. This information
+		  is used by the code-generator.
+		#
+
+
+		var count:=0,syms:=symtab.index;
+
+		tout.put('\tvar\n\t \tkeytab := table(20,undefined) init [\n');
+		if syms.size > 0
+		then	for i in interval(1,syms.size-1,1)
+			do	tout.put('\t\t''',syms[i],''' : ',count,',\n');
+				symtab[syms[i]] := count;
+				count:=count+1;
+			od;
+                	tout.put('\t\t''',syms[0],''' : ',count,'\n');
+			symtab[syms[0]] := count;
+			count := count + 1;
+		fi;
+
+		tout.put('\t],\n\n\n');
+		syms := chartab.index;
+
+		if syms.size > 0
+		then	tout.put('\tkartab := table(20,undefined) init [\n');
+			for i in interval(1,syms.size-1,1)
+			do	tout.put('\t\t''',syms[i],''' : ',count,',\n');
+				symtab[syms[i]] := count;
+				count := count+1;
+			od;
+                	tout.put('\t\t''',syms[0],'''  : ',count,'\n\t],\n\n\n');
+			symtab[syms[0]] := count;
+			count := count + 1;
+		fi;
+
+		syms := predef.index;
+	
+		tout.put('\tpredef := table(10,undefined) init [\n');
+
+		if syms.size > 0
+		then	for i in syms.index
+			do	tout.put('\t\t''',syms[i],''' : ',count,',\n');
+				symtab[syms[i]] := count;
+				count := count + 1;
+			od;
+		fi;
+		tout.put('\t\t''EOF'' : ',count,'\n\t],\n\n\n\n');
+		symtab['EOF'] := count;
+		count := count + 1;
+
+		tout.put('\tSETSIZE := ',count,',\n');
+
+		for i in interval(0,symtab.size-1,1)
+		do	sout.put('\ts_',i,' := SET([',i,']),\n');
+		od;
+	fi;
+
+
+	if errcnt = 0
+	then 
+		sout.put('\tEMPTY := SET([])');
+		for w in treetab.index
+		do
+			gencode(treetab[w].root,'',treetab[w].root.name);
+		od;
+
+		sout.put(';\n\n');
+	fi;
+
+	if errcnt > 0
+	then	stop(1);
+	fi;
+
+);
+
+	
